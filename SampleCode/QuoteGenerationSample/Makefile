@@ -35,6 +35,7 @@ DEBUG ?= 0
 SGX_SDK ?= /opt/intel/sgxsdk
 SGX_MODE ?= HW
 SGX_ARCH ?= x64
+SGX_DCAP ?= /home/thomas/SGXDataCenterAttestationPrimitives/
 
 SGX_COMMON_CFLAGS := -m64
 SGX_LIBRARY_PATH := $(SGX_SDK)/lib64
@@ -54,7 +55,7 @@ DCAP_Library_Name := sgx_dcap_ql
 Urts_Library_Name := sgx_urts
 
 App_Cpp_Files :=  App/App.cpp
-App_Include_Paths := -I$(SGX_SDK)/include 
+App_Include_Paths := -I$(SGX_SDK)/include -I$(SGX_DCAP)/QuoteGeneration/quote_wrapper/common/inc/
 
 App_C_Flags := $(SGX_COMMON_CFLAGS) -fPIC -Wno-attributes $(App_Include_Paths)
 

@@ -36,6 +36,7 @@
  * demonstrate the usage of quote generation.
  */
 
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #if defined(_MSC_VER)
@@ -48,6 +49,7 @@
 #include "sgx_dcap_ql_wrapper.h"
 #include "sgx_pce.h"
 #include "sgx_error.h"
+#include "sgx_quote_3.h"
 
 #include "Enclave_u.h"
 
@@ -94,6 +96,13 @@ CLEANUP:
         sgx_destroy_enclave(eid);
         return ret;
 }
+
+static void print_byte_array(FILE* f, uint8_t* data, int size) {
+    for (int i = 0; i < size; ++i) {
+        fprintf(f, "%02X", data[i]);
+    }
+}
+
 int main(int argc, char* argv[])
 {
     (void)(argc);
@@ -160,7 +169,37 @@ int main(int argc, char* argv[])
         goto CLEANUP;
     }
     printf("succeed!");
-        
+
+    do {
+        sgx_quote3_t* q = (sgx_quote3_t*) (p_quote_buffer);
+        sgx_quote_header_t quote_header = q->header;
+        assert(quote_header.version == 3);
+        assert(quote_header.att_key_type == 2);
+
+        sgx_ql_ecdsa_sig_data_t* sig_data = (sgx_ql_ecdsa_sig_data_t*) (q->signature_data);
+        sgx_ql_auth_data_t* auth_data = (sgx_ql_auth_data_t*) (sig_data->auth_certification_data);
+        sgx_ql_certification_data_t* cert_data_generic = (sgx_ql_certification_data_t*) (sig_data->auth_certification_data + sizeof(*auth_data) + auth_data->size);
+        assert(cert_data_generic->cert_key_type == PPID_RSA3072_ENCRYPTED);
+        assert(cert_data_generic->size == sizeof(sgx_ql_ppid_rsa3072_encrypted_cert_info_t));
+        sgx_ql_ppid_rsa3072_encrypted_cert_info_t* cert_data = (sgx_ql_ppid_rsa3072_encrypted_cert_info_t*) (cert_data_generic->certification_data);
+
+        printf("\nEncPPID= ");
+        print_byte_array(stdout, cert_data->enc_ppid, sizeof(cert_data->enc_ppid));
+
+        printf("\nPCE ID= ");
+        print_byte_array(stdout, (uint8_t*)&cert_data->pce_info.pce_id, sizeof(cert_data->pce_info.pce_id));
+
+        printf("\nPCE ISVSVN= ");
+        print_byte_array(stdout, (uint8_t*)&cert_data->pce_info.pce_isv_svn, sizeof(cert_data->pce_info.pce_isv_svn));
+
+        printf("\nCPUSVN= ");
+        print_byte_array(stdout, (uint8_t*)&cert_data->cpu_svn, sizeof(cert_data->cpu_svn));
+
+        printf("\nQE ID= ");
+        print_byte_array(stdout, (uint8_t*)&quote_header.user_data[0], 16);
+
+    } while (0);
+    
     printf("\n Clean up the enclave load policy:");
     qe3_ret = sgx_qe_cleanup_by_policy();
     if(SGX_QL_SUCCESS != qe3_ret) {
