@@ -1,0 +1,24 @@
+package quoteservice.message;
+
+message Request {
+  message InitQuoteRequest {
+  }
+  message GetQuoteRequest {
+    required bytes report = 1;
+  }
+  optional InitQuoteRequest initQuoteRequest = 1;
+  optional GetQuoteRequest  getQuoteRequest  = 2;
+}
+
+message Response {
+  message InitQuoteResponse {
+    required uint32 errorCode = 1 [default = 1];
+    optional bytes targetInfo = 2;
+  }
+  message GetQuoteResponse {
+    required uint32 errorCode = 1 [default = 1];
+    optional bytes  quote     = 2;
+  }
+  optional InitQuoteResponse initQuoteResponse = 1;
+  optional GetQuoteResponse  getQuoteResponse  = 2;
+}

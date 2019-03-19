@@ -37,11 +37,11 @@
  */
 
 #include <assert.h>
-#include <fcntl.h>
+#include <arpa/inet.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/socket.h>
 #include <sys/types.h>
-#include <sys/stat.h>
 #include <unistd.h>
 #if defined(_MSC_VER)
 #include <Windows.h>
@@ -55,6 +55,8 @@
 #include "sgx_error.h"
 
 #include "Enclave_u.h"
+
+#include "messages.pb-c.h"
 
 #if defined(_MSC_VER)
 #define ENCLAVE_PATH _T("enclave.signed.dll")
@@ -99,6 +101,112 @@ CLEANUP:
         sgx_destroy_enclave(eid);
         return ret;
 }
+
+static void process_initquoterequest(int fd, Quoteservice__Message__Request* msg) {
+    Quoteservice__Message__Response__InitQuoteResponse response =
+        QUOTESERVICE__MESSAGE__RESPONSE__INIT_QUOTE_RESPONSE__INIT;
+    Quoteservice__Message__Response wrapper_msg =
+        QUOTESERVICE__MESSAGE__RESPONSE__INIT;
+    wrapper_msg.initquoteresponse = &response;
+
+    sgx_target_info_t qe_target_info = {0, };
+    quote3_error_t qe3_ret = sgx_qe_get_target_info(&qe_target_info);
+    assert(qe3_ret == SGX_QL_SUCCESS);
+    response.targetinfo.data = (uint8_t*) &qe_target_info;
+    response.targetinfo.len = sizeof(qe_target_info);
+    response.has_targetinfo = 1;
+    
+    uint32_t payload_len = quoteservice__message__response__get_packed_size(&wrapper_msg);
+    uint32_t total_len = payload_len + sizeof(payload_len);
+    uint8_t buf[1024];
+    assert(total_len <= sizeof(buf));
+    memcpy(buf, (uint8_t*)&payload_len, sizeof(payload_len));
+    quoteservice__message__response__pack(&wrapper_msg, buf + sizeof(payload_len));
+
+    int rc = send(fd, buf, total_len, 0);
+    assert(rc == total_len);
+}
+
+static void process_getquoterequest(int fd, Quoteservice__Message__Request* msg) {
+    Quoteservice__Message__Request__GetQuoteRequest* request =
+        (Quoteservice__Message__Request__GetQuoteRequest*) msg;
+    Quoteservice__Message__Response__GetQuoteResponse response =
+        QUOTESERVICE__MESSAGE__RESPONSE__GET_QUOTE_RESPONSE__INIT;
+    Quoteservice__Message__Response wrapper_msg =
+        QUOTESERVICE__MESSAGE__RESPONSE__INIT;
+    wrapper_msg.getquoteresponse = &response;
+
+    uint32_t quote_size = 0;
+    quote3_error_t qe3_ret = sgx_qe_get_quote_size(&quote_size);
+    assert(SGX_QL_SUCCESS == qe3_ret);
+
+    uint8_t* quote_buffer = (uint8_t*) calloc(1, quote_size);
+    assert(NULL != quote_buffer);
+
+    qe3_ret = sgx_qe_get_quote((sgx_report_t*) request->report.data,
+                               quote_size, quote_buffer);
+    assert(SGX_QL_SUCCESS == qe3_ret);
+    response.quote.data = quote_buffer;
+    response.quote.len  = quote_size;
+    
+    uint32_t payload_len = quoteservice__message__response__get_packed_size(&wrapper_msg);
+    uint32_t total_len = payload_len + sizeof(payload_len);
+    uint8_t buf[4096];
+    assert(total_len <= sizeof(buf));
+    memcpy(buf, (uint8_t*)&payload_len, sizeof(payload_len));
+    quoteservice__message__response__pack(&wrapper_msg, buf + sizeof(payload_len));
+
+    int rc = send(fd, buf, total_len, 0);
+    assert(rc == total_len);
+}
+
+static void accept_loop(void) {
+    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    assert(-1 != sockfd);
+    struct sockaddr_in srvaddr = { 0, };
+    srvaddr.sin_family = AF_INET;
+    srvaddr.sin_port = htons(12345);
+    inet_pton(AF_INET, "127.0.0.1", &srvaddr.sin_addr);
+    int ret = bind(sockfd, (struct sockaddr*)&srvaddr, sizeof(srvaddr));
+    assert(-1 != ret);
+    ret = listen(sockfd, 0);
+    assert(-1 != ret);
+
+    do {
+        struct sockaddr_in clientaddr;
+        socklen_t client_len = sizeof(clientaddr);
+        const int clientfd = accept(sockfd, (struct sockaddr*) &clientaddr, &client_len);
+        assert(-1 != clientfd);
+        // do stuff
+
+        uint32_t msglen;
+        ret = read(clientfd, &msglen, sizeof(msglen));
+        uint8_t buf[512];
+        assert(msglen <= sizeof(buf));
+        ret = read(clientfd, buf, msglen);
+        assert(ret == msglen);
+
+        Quoteservice__Message__Request* msg =
+            quoteservice__message__request__unpack(NULL, msglen, buf);
+
+        if (msg->initquoterequest) {
+            process_initquoterequest(clientfd, msg);
+        } else if (msg->getquoterequest) {
+            process_getquoterequest(clientfd, msg);
+        } else {
+            assert(0);
+        }
+        
+        close(clientfd);
+    } while (1);
+}
+
+static void print_byte_array(FILE* f, uint8_t* data, int size) {
+    for (int i = 0; i < size; ++i) {
+        fprintf(f, "%02X", data[i]);
+    }
+}
+
 int main(int argc, char* argv[])
 {
     (void)(argc);
@@ -110,8 +218,9 @@ int main(int argc, char* argv[])
     uint8_t* p_quote_buffer = NULL;
     sgx_target_info_t qe_target_info; 
     sgx_report_t app_report;
-    int fd = -1, rc = -1;
 
+    accept_loop();
+    
     printf("This step is optional: the default enclave load policy is persistent: \n");
     printf("set the enclave load policy as persistent:");
     qe3_ret = sgx_qe_set_enclave_load_policy(SGX_QL_PERSISTENT);
@@ -130,6 +239,7 @@ int main(int argc, char* argv[])
         goto CLEANUP;
     }
     printf("succeed!");
+    // print_byte_array(stdout, (uint8_t*) &qe_target_info, sizeof(qe_target_info));
     printf("\nStep2: Call create_app_report:");
     if(true != create_app_enclave_report(qe_target_info, &app_report)) {
         printf("\nCall to create_app_report() failed\n");
@@ -166,14 +276,7 @@ int main(int argc, char* argv[])
         goto CLEANUP;
     }
     printf("succeed!");
-
-    fd = open("quote.dat", O_CREAT | O_WRONLY, S_IRUSR|S_IWUSR|S_IRGRP|S_IROTH);
-    assert(-1 != fd);
-    rc = write(fd, p_quote_buffer, quote_size);
-    assert(rc == quote_size);
-    close(fd);
-    fd = -1;
-    
+        
     printf("\n Clean up the enclave load policy:");
     qe3_ret = sgx_qe_cleanup_by_policy();
     if(SGX_QL_SUCCESS != qe3_ret) {
